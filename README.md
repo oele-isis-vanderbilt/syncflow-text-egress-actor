@@ -5,10 +5,14 @@ First of all, having programmed in rust for a couple of months for now, I was cu
 
 The livekit egress servers handle the complex multimedia recording. However, text/data channel egress is not supported. This library attempts to implement an actix actor that can be used to extract text from the data channel and send it to a specified endpoint (S3).
 
-## Goals/ Roadmap
+## Architecture
 
-- [ ] Implement a basic actor and messaging model
-- [ ] Implement a basic text extraction model as a task queue/ livekit client server api and tokio
+![Architecture](./docs/images/arch.png)
+
+1. The TextEgressActor: This actor is responsible for extracting text from the data channel and sending it to the specified endpoint based on a specific topic.
+2. Multiple RoomListeners: These actors are responsible for listening to the data channel of a specific room and saving the data to the temporary file system.
+3. The S3Uploader: This actor is responsible for uploading the data to the specified S3 bucket.
+
 
 > [!WARNING]  
 > Work in progress, not ready for production use yet

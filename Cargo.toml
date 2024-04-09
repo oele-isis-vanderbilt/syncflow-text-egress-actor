@@ -8,12 +8,17 @@ edition = "2021"
 [dependencies]
 actix = "0.13.3"
 actix-rt = "2.9.0"
+chrono = "0.4.37"
 env_logger = "0.11.3"
 envy = "0.4.2"
 livekit = "0.3.2"
 livekit-api = "0.3.2"
 log = "0.4.21"
+rusoto_core = "0.48.0"
+rusoto_credential = "0.48.0"
+rusoto_s3 = "0.48.0"
 serde = { version = "1.0.197", features = ["derive"] }
+tempdir = "0.3.7"
 thiserror = "1.0.58"
 tokio = "1.37.0"
 uuid = { version = "1.8.0", features = ["v4"] }

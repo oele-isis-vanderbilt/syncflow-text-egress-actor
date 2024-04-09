@@ -1,5 +1,6 @@
 pub mod text_egress_actor;
 
-pub(crate) mod room_handler;
+pub(crate) mod room_listener_actor;
+pub(crate) mod s3_uploader_actor;
 
-pub mod error;
+pub mod error_messages;
