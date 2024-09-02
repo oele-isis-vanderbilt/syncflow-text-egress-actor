@@ -19,6 +19,13 @@ pub enum EgressMessages {
 }
 
 #[derive(Message, Debug)]
+#[rtype(result = "Result<HashMap<String, TextEgressInfo>, TextEgressError>")]
+pub enum HTTPOnlyMessages {
+    ListEgresses,
+    DeleteRecords,
+}
+
+#[derive(Message, Debug)]
 #[rtype(result = "()")]
 pub(crate) enum RoomListenerUpdates {
     Started {
@@ -47,6 +54,7 @@ pub(crate) enum RoomListenerUpdates {
 
 #[derive(Message, Debug)]
 #[rtype(result = "()")]
+#[allow(dead_code)]
 pub(crate) enum S3UploaderUpdates {
     Started {
         egress_id: String,
@@ -87,7 +95,7 @@ pub struct TextEgressInfo {
     pub topic: Option<String>,
     pub started_at: Option<usize>,
     pub stopped_at: Option<usize>,
-    #[serde(skip_serializing, default)]
+    #[serde(skip_serializing, default, skip_deserializing)]
     pub files: Vec<DataEgressResultFiles>,
     pub error: Option<String>,
     pub status: TextEgressStatus,
@@ -430,6 +438,33 @@ impl Handler<S3UploaderUpdates> for TextEgressActor {
                         active_egress.status = TextEgressStatus::Failed;
                     }
                 });
+            }
+        }
+    }
+}
+
+impl Handler<HTTPOnlyMessages> for TextEgressActor {
+    type Result = ResponseActFuture<Self, Result<HashMap<String, TextEgressInfo>, TextEgressError>>;
+
+    fn handle(&mut self, msg: HTTPOnlyMessages, _ctx: &mut Self::Context) -> Self::Result {
+        match msg {
+            HTTPOnlyMessages::ListEgresses => {
+                let active_egresses_arc = self.active_egresses.clone();
+                let fut = async move {
+                    let active_egresses = active_egresses_arc.lock().await;
+                    Ok(active_egresses.clone())
+                };
+                Box::pin(fut.into_actor(self))
+            }
+            HTTPOnlyMessages::DeleteRecords => {
+                let active_egresses_arc = self.active_egresses.clone();
+                let fut = async move {
+                    let mut active_egresses = active_egresses_arc.lock().await;
+                    let cloned_map = active_egresses.clone();
+                    active_egresses.clear();
+                    Ok(cloned_map)
+                };
+                Box::pin(fut.into_actor(self))
             }
         }
     }

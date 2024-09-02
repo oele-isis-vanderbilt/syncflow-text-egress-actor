@@ -5,6 +5,7 @@ use livekit::{Room, RoomEvent};
 use livekit_api::access_token::{AccessToken, VideoGrants};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tokio::fs::OpenOptions;
 use std::path::PathBuf;
 use tempdir::TempDir;
 use tokio::fs::File;
@@ -68,7 +69,7 @@ pub async fn create_file(
     root: &PathBuf,
 ) -> Result<(File, String), TextEgressError> {
     let file_name = format!("{}.txt", identity);
-    let handler = File::create(root.join(&file_name)).await?;
+    let handler = OpenOptions::new().create(true).append(true).open(root.join(&file_name)).await?;
     let filename_with_path = root.join(&file_name).to_str().unwrap().to_string();
     Ok((handler, filename_with_path))
 }
@@ -88,9 +89,18 @@ pub struct DataEgressResultFiles {
     pub file_path: String,
 }
 
+#[derive(Debug)]
 pub struct FileHandler {
     pub file: File,
     pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextEgressMetadata {
+    pub room_name: String,
+    pub topic: Option<String>,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
 }
 
 impl Actor for RoomListenerActor {
@@ -207,9 +217,10 @@ pub(crate) async fn listen_to_room_data_channels(
 
     let room_join_result = join_room(&server_url, &jwt).await;
 
-    let (_room, mut room_events) = match room_join_result {
+    let (room, mut room_events) = match room_join_result {
         Ok((room, room_events)) => (room, room_events),
         Err(e) => {
+            log::error!("Failed to join room: {:?}", e);
             parent_addr.do_send(RoomListenerUpdates::Failed {
                 egress_id: egress_id.to_string(),
                 error: e,
@@ -231,11 +242,21 @@ pub(crate) async fn listen_to_room_data_channels(
     };
 
     let mut to_listen = topic;
+    let mut metadata = TextEgressMetadata {
+        room_name: room_name.to_string(),
+        topic: to_listen.clone(),
+        started_at: chrono::Utc::now().timestamp(),
+        ended_at: None,
+    };
+
+    println!("Listening to room data channels for room: {:?}", room_name);
 
     loop {
         tokio::select! {
             _ = &mut *cancel_receiver => {
                 log::info!("Cancelling listening to room data channels");
+                // leave the room
+                let _ = room.close().await;
                 break;
             }
             Some(event) = room_events.recv() => {
@@ -246,7 +267,12 @@ pub(crate) async fn listen_to_room_data_channels(
                         kind: _,
                         topic,
                     } => {
-                        let payload_str = String::from_utf8_lossy(&payload);
+                        println!("Data received from participant: {:?}, payload: {:?}", participant, payload);
+                        let timestamp = chrono::Utc::now();
+                        let timestamp_str_iso = timestamp.format("%Y-%m-%dT%H:%M:%S%Z").to_string();
+                        // let timestamp_iso = 
+                        let timestamp_ns = timestamp.timestamp_nanos_opt().unwrap_or_default();
+                        let payload_str = format!("{}|{}|{}\n", timestamp_str_iso, timestamp_ns, String::from_utf8_lossy(&payload).to_string());
                         if let Some(participant) = participant {
                             if let (Some(topic), Some(to_listen)) = (&topic, &to_listen) {
                                 log::info!("Comparing topics: {:?} and {:?}", topic, to_listen);
@@ -301,7 +327,7 @@ pub(crate) async fn listen_to_room_data_channels(
                             let handle = per_participant_files
                                 .get_mut(&participant.identity().to_string())
                                 .unwrap();
-                            match handle.file.write_all(payload.as_ref()).await {
+                            match handle.file.write_all(payload_str.as_ref()).await {
                                 Ok(_) => {
                                     log::debug!(
                                         "Data received from participant: {:?}, payload: {:?}",
@@ -330,13 +356,58 @@ pub(crate) async fn listen_to_room_data_channels(
         }
     }
 
-    let results = per_participant_files
+    let mut results: Vec<DataEgressResultFiles> = per_participant_files
         .iter()
         .map(|(participant, file_handler)| DataEgressResultFiles {
             participant: participant.to_string(),
             file_path: file_handler.path.clone(),
         })
         .collect();
+
+    metadata.ended_at = Some(chrono::Utc::now().timestamp());
+
+    let metadata_file = temp_dir.join("metadata.json");
+    match File::create(&metadata_file).await {
+        Ok(mut fh) => {
+            // Serialize metadata to file
+            let _ = match serde_json::to_string(&metadata) {
+                Ok(s) => fh
+                    .write_all(s.as_bytes())
+                    .await
+                    .map_err(|e| {
+                        log::error!("Failed to write metadata to file: {:?}", e);
+                        parent_addr.do_send(RoomListenerUpdates::Failed {
+                            egress_id: egress_id.to_string(),
+                            error: e.into(),
+                        });
+                        return ();
+                    })
+                    .map(|_| {
+                        log::info!("Metadata written to file: {:?}", metadata_file);
+                        results.push(DataEgressResultFiles {
+                            participant: "metadata".to_string(),
+                            file_path: metadata_file.to_str().unwrap().to_string(),
+                        });
+                    }),
+                Err(e) => {
+                    log::error!("Failed to serialize metadata: {:?}", e);
+                    parent_addr.do_send(RoomListenerUpdates::Failed {
+                        egress_id: egress_id.to_string(),
+                        error: e.into(),
+                    });
+                    return ();
+                }
+            };
+        }
+        Err(e) => {
+            log::error!("Failed to create metadata file: {:?}", e);
+            parent_addr.do_send(RoomListenerUpdates::Failed {
+                egress_id: egress_id.to_string(),
+                error: e.into(),
+            });
+            return ();
+        }
+    };
 
     log::info!("Stopped listening to room data channels");
     parent_addr.do_send(RoomListenerUpdates::Stopped {

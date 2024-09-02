@@ -20,4 +20,7 @@ pub enum TextEgressError {
 
     #[error("Failed to upload file: {0}")]
     S3UploadError(#[from] RusotoError<PutObjectError>),
+
+    #[error("JSON error: {0}")]
+    JsonError(#[from] serde_json::Error),
 }
