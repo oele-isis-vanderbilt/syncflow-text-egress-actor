@@ -19,9 +19,9 @@ livekit = { git="https://github.com/livekit/rust-sdks.git", package="livekit", f
 livekit-api = {git="https://github.com/livekit/rust-sdks.git", package="livekit-api" }
 log = "0.4.21"
 reqwest = { version = "0.12.3", features = ["json"], optional = true }
-rusoto_core = "0.48.0"
+rusoto_core = { version = "0.48.0", default_features = false, features = ["rustls"] }
 rusoto_credential = "0.48.0"
-rusoto_s3 = "0.48.0"
+rusoto_s3 = { version = "0.48.0", default_features = false, features = ["rustls"] }
 serde = { version = "1.0.197", features = ["derive"] }
 serde_json = "1.0.115"
 tempdir = "0.3.7"
