@@ -96,7 +96,7 @@ impl Handler<S3UploaderMessages> for S3UploaderActor {
                                 return ();
                             }
                         }
-                        let key = format!("{}/{}", prefix, file_name);
+                        let key = format!("{}/{}/{}", bucket.clone(), prefix, file_name);
                         let put_req = rusoto_s3::PutObjectRequest {
                             bucket: bucket.clone(),
                             key: key.clone(),
