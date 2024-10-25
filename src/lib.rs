@@ -1,11 +1,9 @@
 pub mod text_egress_actor;
 
+pub mod config;
+pub mod error_messages;
 pub(crate) mod room_listener_actor;
 pub(crate) mod s3_uploader_actor;
-
-pub mod error_messages;
+pub mod session_listener;
 
 pub mod utils;
-
-#[cfg(feature = "client")]
-pub mod text_egress_client;

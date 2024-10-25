@@ -5,10 +5,10 @@ use livekit::{Room, RoomEvent};
 use livekit_api::access_token::{AccessToken, VideoGrants};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::fs::OpenOptions;
 use std::path::PathBuf;
 use tempdir::TempDir;
 use tokio::fs::File;
+use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{
     mpsc,
@@ -24,7 +24,7 @@ use tokio::sync::{
 #[rtype(result = "()")]
 pub enum RoomListenerMessages {
     StartListening {
-        room_name: String,
+        token: String,
         topic: Option<String>,
     },
     StopListening,
@@ -69,16 +69,17 @@ pub async fn create_file(
     root: &PathBuf,
 ) -> Result<(File, String), TextEgressError> {
     let file_name = format!("{}.txt", identity);
-    let handler = OpenOptions::new().create(true).append(true).open(root.join(&file_name)).await?;
+    let handler = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(root.join(&file_name))
+        .await?;
     let filename_with_path = root.join(&file_name).to_str().unwrap().to_string();
     Ok((handler, filename_with_path))
 }
 
 pub struct RoomListenerActor {
     pub egress_id: String,
-    pub livekit_api_key: String,
-    pub livekit_api_secret: String,
-    pub livekit_server_url: String,
     pub parent_addr: Addr<TextEgressActor>,
     cancel_sender: Option<Sender<()>>,
 }
@@ -115,18 +116,9 @@ impl Actor for RoomListenerActor {
 }
 
 impl RoomListenerActor {
-    pub fn new(
-        egress_id: &str,
-        api_key: &str,
-        api_secret: &str,
-        server_url: &str,
-        parent_addr: Addr<TextEgressActor>,
-    ) -> Self {
+    pub fn new(egress_id: &str, parent_addr: Addr<TextEgressActor>) -> Self {
         RoomListenerActor {
             egress_id: egress_id.to_string(),
-            livekit_api_key: api_key.to_string(),
-            livekit_api_secret: api_secret.to_string(),
-            livekit_server_url: server_url.to_string(),
             parent_addr,
             cancel_sender: None,
         }
@@ -147,9 +139,7 @@ impl Handler<RoomListenerMessages> for RoomListenerActor {
                 let rname = room_name.clone();
                 let topic = topic.clone();
                 let egress_id = self.egress_id.clone();
-                let api_key = self.livekit_api_key.clone();
-                let api_secret = self.livekit_api_secret.clone();
-                let server_url = self.livekit_server_url.clone();
+
                 let parent_addr = self.parent_addr.clone();
                 let (tx, mut rx) = channel::<()>();
                 self.cancel_sender = Some(tx);
@@ -270,7 +260,7 @@ pub(crate) async fn listen_to_room_data_channels(
                         println!("Data received from participant: {:?}, payload: {:?}", participant, payload);
                         let timestamp = chrono::Utc::now();
                         let timestamp_str_iso = timestamp.format("%Y-%m-%dT%H:%M:%S%Z").to_string();
-                        // let timestamp_iso = 
+                        // let timestamp_iso =
                         let timestamp_ns = timestamp.timestamp_nanos_opt().unwrap_or_default();
                         let payload_str = format!("{}|{}|{}\n", timestamp_str_iso, timestamp_ns, String::from_utf8_lossy(&payload).to_string());
                         if let Some(participant) = participant {
