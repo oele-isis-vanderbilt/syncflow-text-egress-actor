@@ -24,7 +24,7 @@ use tokio::sync::{
 #[rtype(result = "()")]
 pub enum RoomListenerMessages {
     StartListening {
-        token: String,
+        room_name: String,
         topic: Option<String>,
     },
     StopListening,
@@ -80,6 +80,9 @@ pub async fn create_file(
 
 pub struct RoomListenerActor {
     pub egress_id: String,
+    pub livekit_api_key: String,
+    pub livekit_api_secret: String,
+    pub livekit_server_url: String,
     pub parent_addr: Addr<TextEgressActor>,
     cancel_sender: Option<Sender<()>>,
 }
@@ -116,9 +119,18 @@ impl Actor for RoomListenerActor {
 }
 
 impl RoomListenerActor {
-    pub fn new(egress_id: &str, parent_addr: Addr<TextEgressActor>) -> Self {
+    pub fn new(
+        egress_id: &str,
+        api_key: &str,
+        api_secret: &str,
+        server_url: &str,
+        parent_addr: Addr<TextEgressActor>,
+    ) -> Self {
         RoomListenerActor {
             egress_id: egress_id.to_string(),
+            livekit_api_key: api_key.to_string(),
+            livekit_api_secret: api_secret.to_string(),
+            livekit_server_url: server_url.to_string(),
             parent_addr,
             cancel_sender: None,
         }
@@ -139,7 +151,9 @@ impl Handler<RoomListenerMessages> for RoomListenerActor {
                 let rname = room_name.clone();
                 let topic = topic.clone();
                 let egress_id = self.egress_id.clone();
-
+                let api_key = self.livekit_api_key.clone();
+                let api_secret = self.livekit_api_secret.clone();
+                let server_url = self.livekit_server_url.clone();
                 let parent_addr = self.parent_addr.clone();
                 let (tx, mut rx) = channel::<()>();
                 self.cancel_sender = Some(tx);

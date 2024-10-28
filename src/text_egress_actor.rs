@@ -75,9 +75,6 @@ pub(crate) enum S3UploaderUpdates {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextEgressRequest {
     pub room_name: String,
-    pub token: String,
-    pub livekit_server_url: String,
-    pub project_id: String,
     pub topic: Option<String>,
     pub s3_bucket_name: String,
     pub s3_access_key: String,
@@ -126,6 +123,9 @@ pub struct S3Credentials {
 }
 
 pub struct TextEgressActor {
+    pub livekit_api_key: String,
+    pub livekit_api_secret: String,
+    pub livekit_server_url: String,
     room_listener_actors: HashMap<String, Addr<RoomListenerActor>>,
     s3_uploader_actors: Arc<Mutex<HashMap<String, Addr<S3UploaderActor>>>>,
     active_egresses: Arc<Mutex<HashMap<String, TextEgressInfo>>>,
@@ -133,8 +133,11 @@ pub struct TextEgressActor {
 }
 
 impl TextEgressActor {
-    pub fn new() -> Self {
+    pub fn new(api_key: &str, api_secret: &str, server_url: &str) -> Self {
         TextEgressActor {
+            livekit_api_key: api_key.to_string(),
+            livekit_api_secret: api_secret.to_string(),
+            livekit_server_url: server_url.to_string(),
             room_listener_actors: HashMap::new(),
             s3_uploader_actors: Arc::new(Mutex::new(HashMap::new())),
             active_egresses: Arc::new(Mutex::new(HashMap::new())),
@@ -154,8 +157,17 @@ impl Handler<EgressMessages> for TextEgressActor {
 
                 let room_name = req.room_name.clone();
                 let topic = req.topic.clone();
+                let livekit_api_key = self.livekit_api_key.clone();
+                let livekit_api_secret = self.livekit_api_secret.clone();
+                let livekit_server_url = self.livekit_server_url.clone();
 
-                let room_listener_actor = RoomListenerActor::new(&egress_id, ctx.address().clone());
+                let room_listener_actor = RoomListenerActor::new(
+                    &egress_id,
+                    &livekit_api_key,
+                    &livekit_api_secret,
+                    &livekit_server_url,
+                    ctx.address().clone(),
+                );
 
                 let actor_addr = room_listener_actor.start();
                 actor_addr.do_send(RoomListenerMessages::StartListening {

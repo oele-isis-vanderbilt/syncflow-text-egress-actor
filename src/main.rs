@@ -1,12 +1,14 @@
+use actix::Actor;
 use livekit_text_egress_actor::config::TextEgressConfig;
-use livekit_text_egress_actor::session_listener::SessionListener;
+use livekit_text_egress_actor::session_listener_actor::{ProjectMessages, SessionListenerActor};
 use rustls::crypto::aws_lc_rs::default_provider;
 use std::env;
 use std::error::Error;
+
 use syncflow_client::ProjectClient;
 use syncflow_shared::device_models::DeviceRegisterRequest;
 
-#[tokio::main]
+#[actix_rt::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     default_provider().install_default().unwrap();
     let config = TextEgressConfig::load()?;
@@ -16,75 +18,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     env_logger::init();
 
+    let session_listerner_actor =
+        SessionListenerActor::new(&config.rabbitmq_host, config.rabbitmq_port, false);
+    let addr = session_listerner_actor.start();
+
     for key in config.syncflow_api_keys.iter() {
-        let client = ProjectClient::new(
-            &config.syncflow_server_url,
-            &key.project_id,
-            &key.key,
-            &key.secret,
-        );
+        let result = addr
+            .send(ProjectMessages::RegisterToProject {
+                project_id: key.project_id.clone(),
+                api_key: key.key.clone(),
+                api_secret: key.secret.clone(),
+                base_url: config.syncflow_server_url.clone(),
+            })
+            .await??;
 
-        println!(
-            "Registering text egress actor device for project {:#?}",
-            key.project_id
-        );
-        let registration_request = DeviceRegisterRequest {
-            name: config.device_group_name.clone(),
-            group: "text-egress".to_string(),
-            comments: Some("Text Egress Actor".to_string()),
-        };
+        log::info!("Registered to project: {:#?}", result);
 
-        println!(
-            "Registering text egress actor device: {:#?}",
-            registration_request
-        );
+        let device_deregistered = addr
+            .send(ProjectMessages::DeregisterFromProject {
+                project_id: key.project_id.clone(),
+            })
+            .await??;
 
-        let egress_actor_response = client.register_device(&registration_request).await?;
-
-        log::info!(
-            "Registered text egress actor device: {:#?} for project {:#?}",
-            egress_actor_response,
-            key.project_id
-        );
-
-        let token = client.get_api_token().await?;
-
-        let session_listener = SessionListener::create(
-            &config.rabbitmq_host,
-            config.rabbitmq_port,
-            &token,
-            &egress_actor_response.group,
-            "syncflow",
-            true,
-        )
-        .await?;
-        let client_cloned = client.clone();
-        let cloned_s3_config = config.s3_config.clone();
-
-        let handle = tokio::spawn(async move {
-            session_listener
-                .listen(
-                    &egress_actor_response
-                        .session_notification_exchange_name
-                        .unwrap(),
-                    &egress_actor_response
-                        .session_notification_binding_key
-                        .unwrap(),
-                    &client_cloned,
-                    &cloned_s3_config,
-                )
-                .await
-                .unwrap();
-        });
-
-        handle.await?;
-
-        let egress_actor_response = client.delete_device(&egress_actor_response.id).await?;
-
-        log::info!(
-            "Deleted text egress actor device: {:#?}",
-            egress_actor_response
-        );
+        log::info!("Deregistered from project: {:#?}", device_deregistered);
     }
 
     Ok(())
