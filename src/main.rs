@@ -2,11 +2,9 @@ use actix::Actor;
 use livekit_text_egress_actor::config::TextEgressConfig;
 use livekit_text_egress_actor::session_listener_actor::{ProjectMessages, SessionListenerActor};
 use rustls::crypto::aws_lc_rs::default_provider;
-use std::env;
 use std::error::Error;
-
-use syncflow_client::ProjectClient;
-use syncflow_shared::device_models::DeviceRegisterRequest;
+use std::{env, vec};
+use tokio::signal;
 
 #[actix_rt::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -17,30 +15,43 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "actix_web=debug,actix_rt=debug,livekit_text_egress_actor=debug",
     );
     env_logger::init();
-
-    let session_listerner_actor =
-        SessionListenerActor::new(&config.rabbitmq_host, config.rabbitmq_port, false);
-    let addr = session_listerner_actor.start();
-
+    let mut actors = vec![];
     for key in config.syncflow_api_keys.iter() {
-        let result = addr
-            .send(ProjectMessages::RegisterToProject {
-                project_id: key.project_id.clone(),
-                api_key: key.key.clone(),
-                api_secret: key.secret.clone(),
-                base_url: config.syncflow_server_url.clone(),
-            })
+        let session_listener_actor = SessionListenerActor::new(
+            &config.rabbitmq_host,
+            config.rabbitmq_port,
+            true,
+            &key.project_id,
+            &config.syncflow_server_url,
+            &key.key,
+            &key.secret,
+        )
+        .start();
+
+        let register = session_listener_actor
+            .send(ProjectMessages::Register)
             .await??;
 
-        log::info!("Registered to project: {:#?}", result);
+        actors.push(session_listener_actor);
 
-        let device_deregistered = addr
-            .send(ProjectMessages::DeregisterFromProject {
-                project_id: key.project_id.clone(),
-            })
-            .await??;
+        log::info!("Registered to project: {:#?}", register);
+    }
 
-        log::info!("Deregistered from project: {:#?}", device_deregistered);
+    let mut terminate_signal = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            log::info!("Ctrl+C received, initiating shutdown...");
+        },
+        _ = terminate_signal.recv() => {
+            log::info!("SIGTERM received, initiating shutdown...");
+        },
+    }
+
+    for actor in actors {
+        let result = actor.send(ProjectMessages::Deregister).await??;
+        log::info!("Deregistered from project: {:#?}", result);
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
     }
 
     Ok(())

@@ -40,5 +40,8 @@ pub enum TextEgressError {
     AMQPError(#[from] amqprs::error::Error),
 
     #[error("Project client error: {0}")]
-    ProjecClientError(#[from] syncflow_client::ProjectClientError),
+    ProjectClientError(#[from] syncflow_client::ProjectClientError),
+
+    #[error("Egress group not registered for project id: {0}")]
+    DeviceNotRegistered(String),
 }

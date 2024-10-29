@@ -1,5 +1,5 @@
 use crate::error_messages::TextEgressError;
-use crate::text_egress_actor::{RoomListenerUpdates, TextEgressActor};
+use crate::session_listener_actor::{RoomListenerUpdates, SessionListenerActor};
 use actix::{Actor, Addr, AsyncContext, Context, Handler, Message};
 use livekit::{Room, RoomEvent};
 use livekit_api::access_token::{AccessToken, VideoGrants};
@@ -24,33 +24,12 @@ use tokio::sync::{
 #[rtype(result = "()")]
 pub enum RoomListenerMessages {
     StartListening {
+        join_token: String,
+        server_url: String,
         room_name: String,
         topic: Option<String>,
     },
     StopListening,
-}
-
-fn get_egress_token(
-    room_name: &str,
-    api_key: &str,
-    api_secret: &str,
-) -> Result<String, TextEgressError> {
-    let video_grants = VideoGrants {
-        room: room_name.to_string(),
-        hidden: true,
-        can_subscribe: true,
-        can_publish: false,
-        room_join: true,
-        room_create: false,
-        ..Default::default()
-    };
-
-    let access_token = AccessToken::with_api_key(api_key, api_secret)
-        .with_name("TEXT-EGRESS-BOT")
-        .with_identity("TEXT-EGRESS-BOT")
-        .with_grants(video_grants);
-
-    access_token.to_jwt().map_err(|e| e.into())
 }
 
 pub(crate) async fn join_room(
@@ -80,10 +59,7 @@ pub async fn create_file(
 
 pub struct RoomListenerActor {
     pub egress_id: String,
-    pub livekit_api_key: String,
-    pub livekit_api_secret: String,
-    pub livekit_server_url: String,
-    pub parent_addr: Addr<TextEgressActor>,
+    pub parent_addr: Addr<SessionListenerActor>,
     cancel_sender: Option<Sender<()>>,
 }
 
@@ -119,18 +95,9 @@ impl Actor for RoomListenerActor {
 }
 
 impl RoomListenerActor {
-    pub fn new(
-        egress_id: &str,
-        api_key: &str,
-        api_secret: &str,
-        server_url: &str,
-        parent_addr: Addr<TextEgressActor>,
-    ) -> Self {
+    pub fn new(egress_id: &str, parent_addr: Addr<SessionListenerActor>) -> Self {
         RoomListenerActor {
             egress_id: egress_id.to_string(),
-            livekit_api_key: api_key.to_string(),
-            livekit_api_secret: api_secret.to_string(),
-            livekit_server_url: server_url.to_string(),
             parent_addr,
             cancel_sender: None,
         }
@@ -143,7 +110,12 @@ impl Handler<RoomListenerMessages> for RoomListenerActor {
     fn handle(&mut self, msg: RoomListenerMessages, ctx: &mut Self::Context) -> Self::Result {
         log::info!("Received message: {:?}", &msg);
         match msg {
-            RoomListenerMessages::StartListening { room_name, topic } => {
+            RoomListenerMessages::StartListening {
+                server_url,
+                join_token,
+                room_name,
+                topic,
+            } => {
                 log::info!(
                     "Starting to listen to room data channels for room: {:?}",
                     room_name
@@ -151,17 +123,13 @@ impl Handler<RoomListenerMessages> for RoomListenerActor {
                 let rname = room_name.clone();
                 let topic = topic.clone();
                 let egress_id = self.egress_id.clone();
-                let api_key = self.livekit_api_key.clone();
-                let api_secret = self.livekit_api_secret.clone();
-                let server_url = self.livekit_server_url.clone();
                 let parent_addr = self.parent_addr.clone();
                 let (tx, mut rx) = channel::<()>();
                 self.cancel_sender = Some(tx);
 
                 let fut = async move {
                     listen_to_room_data_channels(
-                        &api_key,
-                        &api_secret,
+                        &join_token,
                         &server_url,
                         &rname,
                         &egress_id,
@@ -188,14 +156,13 @@ impl Handler<RoomListenerMessages> for RoomListenerActor {
 }
 
 pub(crate) async fn listen_to_room_data_channels(
-    api_key: &str,
-    api_secret: &str,
+    join_token: &str,
     server_url: &str,
     room_name: &str,
     egress_id: &str,
     topic: Option<String>,
     cancel_receiver: &mut OneshotReceiver<()>,
-    parent_addr: Addr<TextEgressActor>,
+    parent_addr: Addr<SessionListenerActor>,
 ) -> () {
     log::info!("Listening to room data channels for room: {:?}", room_name);
 
@@ -206,20 +173,7 @@ pub(crate) async fn listen_to_room_data_channels(
         topic: topic.clone(),
     });
 
-    let jwt = get_egress_token(room_name, &api_key, &api_secret);
-    let jwt = match jwt {
-        Ok(jwt) => jwt,
-        Err(e) => {
-            log::error!("Failed to generate access token: {:?}", e);
-            parent_addr.do_send(RoomListenerUpdates::Failed {
-                egress_id: egress_id.to_string(),
-                error: e,
-            });
-            return ();
-        }
-    };
-
-    let room_join_result = join_room(&server_url, &jwt).await;
+    let room_join_result = join_room(&server_url, join_token).await;
 
     let (room, mut room_events) = match room_join_result {
         Ok((room, room_events)) => (room, room_events),
