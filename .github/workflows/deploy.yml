@@ -4,7 +4,6 @@ on:
     push:
       branches:
         - main
-        - 6-deploy-to-jetstream
   
     release: # Trigger the workflow on release events
       types: [published]
@@ -32,7 +31,6 @@ jobs:
                     cd $HOME/SyncFlowTextEgressActorDeployment && rm -rf syncflow-text-egress-actor
                     git clone git@github.com:oele-isis-vanderbilt/syncflow-text-egress-actor.git
                     cd syncflow-text-egress-actor
-                    git checkout -b 6-deploy-to-jetstream origin/6-deploy-to-jetstream
                     cp ../.env .env.prod
                     sudo chmod 666 /var/run/docker.sock
                     docker compose -p syncflow-text-egress-actor-dev build
