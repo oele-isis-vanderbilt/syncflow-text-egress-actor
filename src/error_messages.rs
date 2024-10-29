@@ -23,4 +23,28 @@ pub enum TextEgressError {
 
     #[error("JSON error: {0}")]
     JsonError(#[from] serde_json::Error),
+
+    #[error("Error loading environment file: {0}")]
+    DotEnvError(#[from] dotenvy::Error),
+
+    #[error("Error deserializing environment: {0}")]
+    EnviousError(#[from] envious::EnvDeserializationError),
+
+    #[error("Error in reqwest: {0}")]
+    ReqwestError(#[from] reqwest::Error),
+
+    #[error("Error in JWT: {0}")]
+    JWTError(#[from] jsonwebtoken::errors::Error),
+
+    #[error("AMQPError: {0}")]
+    AMQPError(#[from] amqprs::error::Error),
+
+    #[error("Project client error: {0}")]
+    ProjectClientError(#[from] syncflow_client::ProjectClientError),
+
+    #[error("Egress group not registered for project id: {0}")]
+    DeviceNotRegistered(String),
+
+    #[error("S3 Uploader Error: {0}")]
+    S3UploaderError(String),
 }

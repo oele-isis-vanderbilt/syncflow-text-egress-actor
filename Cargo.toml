@@ -1,8 +1,8 @@
 [package]
-name = "livekit-text-egress-actor"
+name = "syncflow-text-egress-actor"
 version = "0.1.0"
 edition = "2021"
-default-run = "livekit-text-egress-actor"
+default-run = "syncflow-text-egress-actor"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -11,26 +11,30 @@ actix = "0.13.3"
 actix-files = "0.6.5"
 actix-rt = "2.9.0"
 actix-web = "4.5.1"
+amqprs = { version = "2.1.0", features = ["tls"] }
 chrono = "0.4.37"
 dotenvy = "0.15.7"
 env_logger = "0.11.3"
+envious = "0.2.2"
 envy = "0.4.2"
+jsonwebtoken = "9.3.0"
+livekit-runtime = { version = "0.3.0", features = ["tokio"] }
 livekit = { git="https://github.com/livekit/rust-sdks.git", package="livekit", features = ["rustls-tls-native-roots"] }
 livekit-api = {git="https://github.com/livekit/rust-sdks.git", package="livekit-api" }
+livekit-protocol = "0.3.5"
 log = "0.4.21"
-reqwest = { version = "0.12.3", features = ["json"], optional = true }
-rusoto_core = { version = "0.48.0", default_features = false, features = ["rustls"] }
+reqwest = { version = "0.12.8", features = ["json", "rustls-tls"] }
+rusoto_core = { version = "0.48.0", default-features = false, features = ["rustls"] }
 rusoto_credential = "0.48.0"
-rusoto_s3 = { version = "0.48.0", default_features = false, features = ["rustls"] }
-serde = { version = "1.0.197", features = ["derive"] }
-serde_json = "1.0.115"
+rusoto_s3 = { version = "0.48.0", default-features = false, features = ["rustls"] }
+
 tempdir = "0.3.7"
 thiserror = "1.0.58"
 tokio = { version = "1", features = ["full"] }
 uuid = { version = "1.8.0", features = ["v4"] }
-
-
-[features]
-client = [
-    "reqwest"
-]
+syncflow_client = { git = "https://github.com/oele-isis-vanderbilt/SyncFlow.git", branch = "main", package="client" }
+syncflow_shared = { git = "https://github.com/oele-isis-vanderbilt/SyncFlow.git", branch = "main", package="shared" }
+serde = { version = "1.0.213", features = ["derive"] }
+serde_json = "1.0.132"
+openssl = "0.10.68"
+rustls = "0.23.15"

@@ -1,20 +1,24 @@
-use crate::text_egress_actor::{S3UploaderUpdates, TextEgressActor};
 use actix::{Actor, Addr, Handler, Message};
 use rusoto_s3::S3;
 use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
 
+use crate::session_listener_actor::{S3UploaderUpdates, SessionListenerActor};
+
 #[derive(Debug, Clone, Message)]
 #[rtype(result = "()")]
 pub enum S3UploaderMessages {
-    Start { prefix: String, files: Vec<String> },
+    Start {
+        prefix: String,
+        egress_id: String,
+        files: Vec<String>,
+    },
 }
 
 pub(crate) struct S3UploaderActor {
-    egress_id: String,
     bucket: String,
     s3_client: rusoto_s3::S3Client,
-    parent_addr: Addr<TextEgressActor>,
+    parent_addr: Addr<SessionListenerActor>,
 }
 
 impl Actor for S3UploaderActor {
@@ -27,13 +31,12 @@ impl Actor for S3UploaderActor {
 
 impl S3UploaderActor {
     pub fn new(
-        egress_id: &str,
         bucket: &str,
         access_key: &str,
         secret_key: &str,
         region: &str,
         endpoint: &str,
-        parent_addr: Addr<TextEgressActor>,
+        parent_addr: Addr<SessionListenerActor>,
     ) -> Self {
         let client = rusoto_core::HttpClient::new().expect("Failed to create request dispatcher");
         let region = rusoto_core::Region::Custom {
@@ -48,7 +51,6 @@ impl S3UploaderActor {
         let s3_client = rusoto_s3::S3Client::new_with(client, credentials_provider, region);
 
         S3UploaderActor {
-            egress_id: egress_id.to_string(),
             bucket: bucket.to_string(),
             s3_client,
             parent_addr,
@@ -61,11 +63,14 @@ impl Handler<S3UploaderMessages> for S3UploaderActor {
 
     fn handle(&mut self, msg: S3UploaderMessages, _ctx: &mut Self::Context) -> Self::Result {
         match msg {
-            S3UploaderMessages::Start { prefix, files } => {
+            S3UploaderMessages::Start {
+                prefix,
+                egress_id,
+                files,
+            } => {
                 log::info!("Uploading files to S3 bucket: {}", self.bucket);
                 let parent_addr = self.parent_addr.clone();
                 let bucket = self.bucket.clone();
-                let egress_id = self.egress_id.clone();
                 let s3_client = self.s3_client.clone();
                 let mut uploaded_files: Vec<String> = vec![];
 
@@ -80,7 +85,7 @@ impl Handler<S3UploaderMessages> for S3UploaderActor {
                                     egress_id: egress_id.clone(),
                                     error: e.into(),
                                 });
-                                return ();
+                                return;
                             }
                         };
                         let file_path = PathBuf::from(&file);
@@ -93,10 +98,10 @@ impl Handler<S3UploaderMessages> for S3UploaderActor {
                                     egress_id: egress_id.clone(),
                                     error: e.into(),
                                 });
-                                return ();
+                                return;
                             }
                         }
-                        let key = format!("{}/{}/{}", bucket.clone(), prefix, file_name);
+                        let key = format!("{}/{}", prefix, file_name);
                         let put_req = rusoto_s3::PutObjectRequest {
                             bucket: bucket.clone(),
                             key: key.clone(),
@@ -115,7 +120,7 @@ impl Handler<S3UploaderMessages> for S3UploaderActor {
                                     egress_id: egress_id.clone(),
                                     error: e.into(),
                                 });
-                                return ();
+                                return;
                             }
                         }
                     }
