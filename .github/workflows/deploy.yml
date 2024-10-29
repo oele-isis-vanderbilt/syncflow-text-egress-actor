@@ -19,7 +19,7 @@ jobs:
         steps:
           - uses: actions/checkout@v4
 
-          - name: Deploy to JetStream2 / Docker Cleanup
+          - name: Deploy to JetStream2
             env:
                 PRIVATE_KEY: ${{ secrets.JETSTREAM2_PRIV_KEY_PEM }}
                 HOST: ${{ secrets.JETSTREAM2_HOST }}
@@ -35,7 +35,21 @@ jobs:
                     git checkout -b 6-deploy-to-jetstream origin/6-deploy-to-jetstream
                     cp ../.env .env.prod
                     sudo chmod 666 /var/run/docker.sock
-                    docker compose build
-                    docker compose down
-                    docker compose up -d
+                    docker compose -p syncflow-text-egress-actor-dev build
+                    docker compose -p syncflow-text-egress-actor-dev down
+                    docker compose -p syncflow-text-egress-actor-dev up -d
+                '
+
+          - name: Docker Cleanup on JetStream2 VM
+            if: github.event_name == 'schedule'
+            env:
+                PRIVATE_KEY: ${{ secrets.JETSTREAM2_PRIV_KEY_PEM }}
+                HOST: ${{ secrets.JETSTREAM2_HOST }}
+                USERNAME: ${{ secrets.JETSTREAM2_USERNAME }}
+            run: |
+                echo "$PRIVATE_KEY" > private_key && chmod 600 private_key
+                ssh-keygen -y -f private_key > /dev/null
+                ssh -o StrictHostKeyChecking=no -i private_key ${USERNAME}@${HOST} '
+                    sudo chmod 666 /var/run/docker.sock
+                    docker system prune -f
                 '
