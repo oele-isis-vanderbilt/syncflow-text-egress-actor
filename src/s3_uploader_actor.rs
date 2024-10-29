@@ -85,7 +85,7 @@ impl Handler<S3UploaderMessages> for S3UploaderActor {
                                     egress_id: egress_id.clone(),
                                     error: e.into(),
                                 });
-                                return ();
+                                return;
                             }
                         };
                         let file_path = PathBuf::from(&file);
@@ -98,7 +98,7 @@ impl Handler<S3UploaderMessages> for S3UploaderActor {
                                     egress_id: egress_id.clone(),
                                     error: e.into(),
                                 });
-                                return ();
+                                return;
                             }
                         }
                         let key = format!("{}/{}", prefix, file_name);
@@ -120,7 +120,7 @@ impl Handler<S3UploaderMessages> for S3UploaderActor {
                                     egress_id: egress_id.clone(),
                                     error: e.into(),
                                 });
-                                return ();
+                                return;
                             }
                         }
                     }

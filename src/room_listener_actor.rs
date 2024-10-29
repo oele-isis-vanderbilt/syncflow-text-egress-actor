@@ -2,10 +2,9 @@ use crate::error_messages::TextEgressError;
 use crate::session_listener_actor::{RoomListenerUpdates, SessionListenerActor};
 use actix::{Actor, Addr, AsyncContext, Context, Handler, Message};
 use livekit::{Room, RoomEvent};
-use livekit_api::access_token::{AccessToken, VideoGrants};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::Path;
 use tempdir::TempDir;
 use tokio::fs::File;
 use tokio::fs::OpenOptions;
@@ -29,6 +28,7 @@ pub enum RoomListenerMessages {
         room_name: String,
         topic: Option<String>,
     },
+    #[allow(dead_code)]
     StopListening,
 }
 
@@ -43,10 +43,7 @@ pub(crate) async fn join_room(
     Ok((room, room_events))
 }
 
-pub async fn create_file(
-    identity: &str,
-    root: &PathBuf,
-) -> Result<(File, String), TextEgressError> {
+pub async fn create_file(identity: &str, root: &Path) -> Result<(File, String), TextEgressError> {
     let file_name = format!("{}.txt", identity);
     let handler = OpenOptions::new()
         .create(true)
@@ -163,7 +160,7 @@ pub(crate) async fn listen_to_room_data_channels(
     topic: Option<String>,
     cancel_receiver: &mut OneshotReceiver<()>,
     parent_addr: Addr<SessionListenerActor>,
-) -> () {
+) {
     log::info!("Listening to room data channels for room: {:?}", room_name);
 
     parent_addr.do_send(RoomListenerUpdates::Started {
@@ -173,7 +170,7 @@ pub(crate) async fn listen_to_room_data_channels(
         topic: topic.clone(),
     });
 
-    let room_join_result = join_room(&server_url, join_token).await;
+    let room_join_result = join_room(server_url, join_token).await;
 
     let (room, mut room_events) = match room_join_result {
         Ok((room, room_events)) => (room, room_events),
@@ -183,7 +180,7 @@ pub(crate) async fn listen_to_room_data_channels(
                 egress_id: egress_id.to_string(),
                 error: e,
             });
-            return ();
+            return;
         }
     };
 
@@ -195,7 +192,7 @@ pub(crate) async fn listen_to_room_data_channels(
                 egress_id: egress_id.to_string(),
                 error: e.into(),
             });
-            return ();
+            return;
         }
     };
 
@@ -206,6 +203,7 @@ pub(crate) async fn listen_to_room_data_channels(
         started_at: chrono::Utc::now().timestamp(),
         ended_at: None,
     };
+    let mut participant_disconnected_files = vec![];
 
     println!("Listening to room data channels for room: {:?}", room_name);
 
@@ -227,10 +225,10 @@ pub(crate) async fn listen_to_room_data_channels(
                     } => {
                         println!("Data received from participant: {:?}, payload: {:?}", participant, payload);
                         let timestamp = chrono::Utc::now();
-                        let timestamp_str_iso = timestamp.format("%Y-%m-%dT%H:%M:%S%Z").to_string();
+                        let timestamp_str_iso = timestamp.format("%Y-%m-%dT%H:%M:%S%Z");
                         // let timestamp_iso =
                         let timestamp_ns = timestamp.timestamp_nanos_opt().unwrap_or_default();
-                        let payload_str = format!("{}|{}|{}\n", timestamp_str_iso, timestamp_ns, String::from_utf8_lossy(&payload).to_string());
+                        let payload_str = format!("{}|{}|{}\n", timestamp_str_iso, timestamp_ns, String::from_utf8_lossy(&payload));
                         if let Some(participant) = participant {
                             if let (Some(topic), Some(to_listen)) = (&topic, &to_listen) {
                                 log::info!("Comparing topics: {:?} and {:?}", topic, to_listen);
@@ -244,7 +242,7 @@ pub(crate) async fn listen_to_room_data_channels(
                                 "{}-{}-{}",
                                 participant.identity().as_str(),
                                 topic_prefix,
-                                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%Z").to_string()
+                                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%Z")
                             );
 
                             if !per_participant_files.contains_key(participant.identity().as_str()) {
@@ -269,15 +267,13 @@ pub(crate) async fn listen_to_room_data_channels(
                                             .collect(),
                                             topic: to_listen.clone(),
                                         });
-                                        ()
                                     },
                                     Err(e) => {
                                         log::error!("Failed to create file: {:?}", e);
                                         parent_addr.do_send(RoomListenerUpdates::Failed {
                                             egress_id: egress_id.to_string(),
-                                            error: e.into()
+                                            error: e
                                         });
-                                        return ();
                                     }
                                 };
                             }
@@ -299,11 +295,21 @@ pub(crate) async fn listen_to_room_data_channels(
                                         egress_id: egress_id.to_string(),
                                         error: e.into()
                                     });
-                                    return ();
                                 }
                             }
                         }
-                    }
+                    },
+                    RoomEvent::ParticipantDisconnected(participant) => {
+                        let participant_id = participant.identity().to_string();
+                        if let Some(file_handler) = per_participant_files.remove(&participant_id) {
+                            log::info!("Participant disconnected: {:?}", participant_id);
+                            let _ = file_handler.file.sync_all().await;
+                            participant_disconnected_files.push(DataEgressResultFiles {
+                                participant: participant_id,
+                                file_path: file_handler.path,
+                            });
+                        }
+                    },
                     RoomEvent::Disconnected { reason } => {
                         log::info!("Disconnected from room {:?}", reason);
                         break;
@@ -322,6 +328,8 @@ pub(crate) async fn listen_to_room_data_channels(
         })
         .collect();
 
+    results.extend(participant_disconnected_files);
+
     metadata.ended_at = Some(chrono::Utc::now().timestamp());
 
     let metadata_file = temp_dir.join("metadata.json");
@@ -338,7 +346,6 @@ pub(crate) async fn listen_to_room_data_channels(
                             egress_id: egress_id.to_string(),
                             error: e.into(),
                         });
-                        return ();
                     })
                     .map(|_| {
                         log::info!("Metadata written to file: {:?}", metadata_file);
@@ -353,7 +360,7 @@ pub(crate) async fn listen_to_room_data_channels(
                         egress_id: egress_id.to_string(),
                         error: e.into(),
                     });
-                    return ();
+                    return;
                 }
             };
         }
@@ -363,7 +370,6 @@ pub(crate) async fn listen_to_room_data_channels(
                 egress_id: egress_id.to_string(),
                 error: e.into(),
             });
-            return ();
         }
     };
 

@@ -1,8 +1,8 @@
 [package]
-name = "livekit-text-egress-actor"
+name = "syncflow-text-egress-actor"
 version = "0.1.0"
 edition = "2021"
-default-run = "livekit-text-egress-actor"
+default-run = "syncflow-text-egress-actor"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

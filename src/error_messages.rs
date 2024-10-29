@@ -44,4 +44,7 @@ pub enum TextEgressError {
 
     #[error("Egress group not registered for project id: {0}")]
     DeviceNotRegistered(String),
+
+    #[error("S3 Uploader Error: {0}")]
+    S3UploaderError(String),
 }

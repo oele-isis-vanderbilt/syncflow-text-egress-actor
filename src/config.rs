@@ -18,19 +18,19 @@ fn load_env() {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextEgressConfig {
     pub syncflow_server_url: String,
-    pub syncflow_api_keys: Vec<SyncFlowAPIKeys>,
+    pub projects: Vec<Projects>,
     pub rabbitmq_host: String,
     pub rabbitmq_port: u16,
     pub rabbitmq_vhost_name: String,
     pub device_group_name: String,
-    pub s3_config: S3Config,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncFlowAPIKeys {
+pub struct Projects {
     pub key: String,
     pub secret: String,
     pub project_id: String,
+    pub s3_config: S3Config,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

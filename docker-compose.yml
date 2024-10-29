@@ -1,0 +1,12 @@
+services:
+  syncflow-text-egress-actor-service-prod:
+    build:
+      context: .
+    image: syncflow-text-egress-actor:stable
+    container_name: syncflow-text-egress-actor-prod
+    env_file: .env.prod
+    volumes:
+      - syncflow-text-egress-actor-files:/tmp/
+  
+volumes:
+  syncflow-text-egress-actor-files:

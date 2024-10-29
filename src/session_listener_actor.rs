@@ -8,13 +8,12 @@ use actix::{Actor, Addr, Handler};
 use amqprs::channel::{BasicConsumeArguments, QueueBindArguments, QueueDeclareArguments};
 use amqprs::connection::{Connection, OpenConnectionArguments};
 use amqprs::tls::TlsAdaptor;
-use livekit_api::services::room;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex;
 use syncflow_client::ProjectClient;
 use syncflow_shared::device_models::{DeviceRegisterRequest, DeviceResponse, NewSessionMessage};
 use syncflow_shared::livekit_models::{TokenRequest, VideoGrantsWrapper};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -54,6 +53,7 @@ pub struct SessionListenerActor {
 }
 
 impl SessionListenerActor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         rabbitmq_host: &str,
         port: u16,
@@ -81,7 +81,7 @@ impl SessionListenerActor {
 }
 
 #[derive(Message, Debug)]
-#[rtype(result = "()")]
+#[rtype(result = "Result<(), TextEgressError>")]
 pub(crate) enum RoomListenerUpdates {
     Started {
         egress_id: String,
@@ -159,7 +159,7 @@ impl Handler<ProjectMessages> for SessionListenerActor {
                 let s3_config = self.s3_config.clone();
 
                 let fut = async move {
-                    let client = client.lock().unwrap();
+                    let client = client.lock().await;
                     let project = client.get_project_details().await?;
                     let registration_request = DeviceRegisterRequest {
                         name: "text-egress".to_string(),
@@ -189,11 +189,11 @@ impl Handler<ProjectMessages> for SessionListenerActor {
                     rmq_listener_addr.do_send(RabbitMQListenerActorMessages::StartListening {
                         project_id: project.id.clone(),
                         group_name: egress_actor_response.group.clone(),
-                        api_token: api_token,
-                        rabbitmq_host: rabbitmq_host,
+                        api_token,
+                        rabbitmq_host,
                         rabbitmq_port: port,
                         rabbitmq_vhost_name: "syncflow".to_string(),
-                        use_ssl: use_ssl,
+                        use_ssl,
                         exchange_name: egress_actor_response
                             .session_notification_exchange_name
                             .clone()
@@ -203,9 +203,9 @@ impl Handler<ProjectMessages> for SessionListenerActor {
                             .clone()
                             .unwrap(),
                     });
-                    *actor_addr_arc.lock().unwrap() = Some(rmq_listener_addr);
+                    *actor_addr_arc.lock().await = Some(rmq_listener_addr);
 
-                    let mut device_details = device_details_arc.lock().unwrap();
+                    let mut device_details = device_details_arc.lock().await;
                     let response = DeviceResponse {
                         id: egress_actor_response.id.clone(),
                         name: egress_actor_response.name.clone(),
@@ -235,7 +235,7 @@ impl Handler<ProjectMessages> for SessionListenerActor {
 
                     let s3_uploader_addr = s3_uploader_actor.start();
 
-                    *s3_uploader_arc.lock().unwrap() = Some(s3_uploader_addr);
+                    *s3_uploader_arc.lock().await = Some(s3_uploader_addr);
 
                     Ok(egress_actor_response)
                 };
@@ -248,8 +248,8 @@ impl Handler<ProjectMessages> for SessionListenerActor {
                 let rmq_actor_addr_arc = self.rabbitmq_listener.clone();
 
                 let fut = async move {
-                    let device_details = device_details_arc.lock().unwrap();
-                    let client = project_client.lock().unwrap();
+                    let device_details = device_details_arc.lock().await;
+                    let client = project_client.lock().await;
                     let project = client.get_project_details().await?;
                     let device = device_details.as_ref().ok_or_else(|| {
                         TextEgressError::DeviceNotRegistered("Device not registered".to_string())
@@ -261,7 +261,7 @@ impl Handler<ProjectMessages> for SessionListenerActor {
                         deregistered_device
                     );
 
-                    let rmq_addr = rmq_actor_addr_arc.lock().unwrap();
+                    let rmq_addr = rmq_actor_addr_arc.lock().await;
                     if rmq_addr.is_some() {
                         rmq_addr.as_ref().unwrap().do_send(
                             RabbitMQListenerActorMessages::StopListening {
@@ -280,9 +280,9 @@ impl Handler<ProjectMessages> for SessionListenerActor {
 }
 
 impl Handler<RoomListenerUpdates> for SessionListenerActor {
-    type Result = ResponseActFuture<Self, ()>;
+    type Result = ResponseActFuture<Self, Result<(), TextEgressError>>;
 
-    fn handle(&mut self, msg: RoomListenerUpdates, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: RoomListenerUpdates, _ctx: &mut Self::Context) -> Self::Result {
         let session_egresses = self.session_egresses.clone();
         let s3_uploader_arc = self.s3_uploader.clone();
         let project_client_arc = self.project_client.clone();
@@ -295,23 +295,25 @@ impl Handler<RoomListenerUpdates> for SessionListenerActor {
                     topic,
                     files,
                 } => {
-                    let mut session_egresses = session_egresses.lock().unwrap();
+                    let mut session_egresses = session_egresses.lock().await;
 
                     session_egresses.insert(
                         egress_id.clone(),
                         TextEgressInfo {
-                            egress_id: egress_id,
-                            room_name: room_name,
-                            topic: topic,
+                            egress_id,
+                            room_name,
+                            topic,
                             started_at: Some(chrono::Utc::now().timestamp() as usize),
                             stopped_at: None,
-                            files: files,
+                            files,
                             error: None,
                             status: TextEgressStatus::Started,
                             paths: vec![],
                             s3_bucket_name: None,
                         },
                     );
+
+                    Ok(())
                 }
                 RoomListenerUpdates::Updated {
                     egress_id,
@@ -319,7 +321,7 @@ impl Handler<RoomListenerUpdates> for SessionListenerActor {
                     topic,
                     files,
                 } => {
-                    let mut session_egresses = session_egresses.lock().unwrap();
+                    let mut session_egresses = session_egresses.lock().await;
                     let existing = session_egresses.get_mut(&egress_id);
 
                     if let Some(active_egress) = existing {
@@ -327,15 +329,17 @@ impl Handler<RoomListenerUpdates> for SessionListenerActor {
                         active_egress.topic = topic;
                         active_egress.room_name = room_name;
                     }
+                    Ok(())
                 }
                 RoomListenerUpdates::Failed { egress_id, error } => {
-                    let mut session_egresses = session_egresses.lock().unwrap();
+                    let mut session_egresses = session_egresses.lock().await;
                     let existing = session_egresses.get_mut(&egress_id);
 
                     if let Some(active_egress) = existing {
                         active_egress.error = Some(error.to_string());
                         active_egress.status = TextEgressStatus::Failed;
                     }
+                    Ok(())
                 }
                 RoomListenerUpdates::Stopped {
                     egress_id,
@@ -343,7 +347,7 @@ impl Handler<RoomListenerUpdates> for SessionListenerActor {
                     topic,
                     files,
                 } => {
-                    let mut session_egresses = session_egresses.lock().unwrap();
+                    let mut session_egresses = session_egresses.lock().await;
                     let existing = session_egresses.get_mut(&egress_id);
 
                     if let Some(active_egress) = existing {
@@ -353,13 +357,12 @@ impl Handler<RoomListenerUpdates> for SessionListenerActor {
                         active_egress.stopped_at = Some(chrono::Utc::now().timestamp() as usize);
                         active_egress.status = TextEgressStatus::Complete;
 
-                        let s3_uploader_addr = s3_uploader_arc.lock().unwrap();
+                        let s3_uploader_addr = s3_uploader_arc.lock().await;
                         let project_details = project_client_arc
                             .lock()
-                            .unwrap()
-                            .get_project_details()
                             .await
-                            .unwrap();
+                            .get_project_details()
+                            .await?;
 
                         if s3_uploader_addr.is_some() {
                             let uploader_addr = s3_uploader_addr.as_ref().unwrap();
@@ -384,18 +387,20 @@ impl Handler<RoomListenerUpdates> for SessionListenerActor {
 
                             let _ = uploader_addr
                                 .send(S3UploaderMessages::Start {
-                                    prefix: prefix,
-                                    egress_id: egress_id,
-                                    files: files,
+                                    prefix,
+                                    egress_id,
+                                    files,
                                 })
                                 .await;
 
-                            ()
+                            Ok(())
                         } else {
-                            ()
+                            Err(TextEgressError::S3UploaderError(
+                                "S3 Uploader not available".to_string(),
+                            ))
                         }
                     } else {
-                        ()
+                        Err(TextEgressError::EgressNotFound(egress_id))
                     }
                 }
             }
@@ -408,20 +413,40 @@ impl Handler<RoomListenerUpdates> for SessionListenerActor {
 impl Handler<S3UploaderUpdates> for SessionListenerActor {
     type Result = ResponseActFuture<Self, Result<(), TextEgressError>>;
 
-    fn handle(&mut self, msg: S3UploaderUpdates, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: S3UploaderUpdates, _ctx: &mut Self::Context) -> Self::Result {
         let fut = async move {
             match msg {
                 S3UploaderUpdates::Started {
                     egress_id,
                     files,
                     bucket,
-                } => {}
+                } => {
+                    log::info!(
+                        "S3 Upload started for egress_id: {:#?} to bucket: {:#?} with files: {:#?}",
+                        egress_id,
+                        bucket,
+                        files
+                    );
+                }
                 S3UploaderUpdates::Completed {
                     egress_id,
                     files,
                     bucket,
-                } => {}
-                S3UploaderUpdates::Failed { egress_id, error } => {}
+                } => {
+                    log::info!(
+                        "S3 Upload completed for egress_id: {:#?} to bucket: {:#?}. Files : {:#?}",
+                        egress_id,
+                        bucket,
+                        files
+                    );
+                }
+                S3UploaderUpdates::Failed { egress_id, error } => {
+                    log::error!(
+                        "S3 Upload failed for egress_id: {:#?} with error: {:#?}",
+                        egress_id,
+                        error
+                    );
+                }
             }
             Ok(())
         };
@@ -438,7 +463,7 @@ impl Handler<SessionCreatedMessage> for SessionListenerActor {
         let parent_addr = _ctx.address();
 
         let fut = async move {
-            let project_client = client.lock().unwrap();
+            let project_client = client.lock().await;
 
             let session_token = project_client
                 .generate_session_token(
@@ -584,7 +609,7 @@ impl Handler<RabbitMQListenerActorMessages> for RabbitMQListenerActor {
                     let connection = Connection::open(&args).await?;
 
                     let channel = Arc::new(Mutex::new(connection.open_channel(None).await?));
-                    *conn.lock().unwrap() = Some(connection);
+                    *conn.lock().await = Some(connection);
 
                     let queue_declare_args = QueueDeclareArguments::default()
                         .exclusive(true)
@@ -593,7 +618,7 @@ impl Handler<RabbitMQListenerActorMessages> for RabbitMQListenerActor {
 
                     let (queue_name, _, _) = channel
                         .lock()
-                        .unwrap()
+                        .await
                         .queue_declare(queue_declare_args)
                         .await?
                         .ok_or_else(|| {
@@ -604,7 +629,7 @@ impl Handler<RabbitMQListenerActorMessages> for RabbitMQListenerActor {
 
                     let queue_bind_args =
                         QueueBindArguments::new(&queue_name, &exchange_name, &binding_key);
-                    channel.lock().unwrap().queue_bind(queue_bind_args).await?;
+                    channel.lock().await.queue_bind(queue_bind_args).await?;
 
                     let cloned_channel = Arc::clone(&channel);
                     let cloned_queue = queue_name.clone();
@@ -612,7 +637,7 @@ impl Handler<RabbitMQListenerActorMessages> for RabbitMQListenerActor {
                     let consume_args = BasicConsumeArguments::new(&cloned_queue, "text-egress");
                     let result = cloned_channel
                         .lock()
-                        .unwrap()
+                        .await
                         .basic_consume_rx(consume_args)
                         .await;
                     let (_, mut rx) = result?;
@@ -637,12 +662,12 @@ impl Handler<RabbitMQListenerActorMessages> for RabbitMQListenerActor {
                 log::debug!("Stopping RabbitMQ listener for project: {:#?}", project_id);
                 let conn = self.connection.clone();
                 let fut = async move {
-                    let connection = conn.lock().unwrap();
+                    let connection = conn.lock().await;
                     if connection.is_none() {
                     } else {
                         let conn = connection.as_ref().unwrap();
                         conn.clone().close().await?;
-                        log::info!("RabbitMQ connection closed--");
+                        log::info!("RabbitMQ connection closed for {:#?}", project_id);
                     }
                     Ok(())
                 };
