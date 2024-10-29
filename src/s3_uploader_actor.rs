@@ -8,7 +8,11 @@ use crate::session_listener_actor::{S3UploaderUpdates, SessionListenerActor};
 #[derive(Debug, Clone, Message)]
 #[rtype(result = "()")]
 pub enum S3UploaderMessages {
-    Start { prefix: String, egress_id: String, files: Vec<String> },
+    Start {
+        prefix: String,
+        egress_id: String,
+        files: Vec<String>,
+    },
 }
 
 pub(crate) struct S3UploaderActor {
@@ -59,7 +63,11 @@ impl Handler<S3UploaderMessages> for S3UploaderActor {
 
     fn handle(&mut self, msg: S3UploaderMessages, _ctx: &mut Self::Context) -> Self::Result {
         match msg {
-            S3UploaderMessages::Start { prefix, egress_id, files } => {
+            S3UploaderMessages::Start {
+                prefix,
+                egress_id,
+                files,
+            } => {
                 log::info!("Uploading files to S3 bucket: {}", self.bucket);
                 let parent_addr = self.parent_addr.clone();
                 let bucket = self.bucket.clone();

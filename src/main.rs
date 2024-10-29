@@ -25,6 +25,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &config.syncflow_server_url,
             &key.key,
             &key.secret,
+            &config.s3_config,
         )
         .start();
 

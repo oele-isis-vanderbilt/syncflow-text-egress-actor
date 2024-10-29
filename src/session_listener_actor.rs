@@ -1,17 +1,45 @@
 use self::room_listener_actor::DataEgressResultFiles;
+use crate::config::S3Config;
 use crate::error_messages::TextEgressError;
 use crate::room_listener_actor::{self, RoomListenerActor, RoomListenerMessages};
+use crate::s3_uploader_actor::{S3UploaderActor, S3UploaderMessages};
 use actix::prelude::*;
 use actix::{Actor, Addr, Handler};
 use amqprs::channel::{BasicConsumeArguments, QueueBindArguments, QueueDeclareArguments};
 use amqprs::connection::{Connection, OpenConnectionArguments};
 use amqprs::tls::TlsAdaptor;
+use livekit_api::services::room;
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::Mutex;
-use std::{collections::HashMap, sync::Arc};
 use syncflow_client::ProjectClient;
 use syncflow_shared::device_models::{DeviceRegisterRequest, DeviceResponse, NewSessionMessage};
 use syncflow_shared::livekit_models::{TokenRequest, VideoGrantsWrapper};
 use uuid::Uuid;
+
+#[derive(Debug, Clone)]
+pub enum TextEgressStatus {
+    Started,
+    Stopped,
+    Failed,
+    Starting,
+    Stopping,
+    Complete,
+}
+
+#[derive(Debug, Clone)]
+pub struct TextEgressInfo {
+    pub egress_id: String,
+    pub room_name: String,
+    pub topic: Option<String>,
+    pub started_at: Option<usize>,
+    pub stopped_at: Option<usize>,
+    pub files: Vec<DataEgressResultFiles>,
+    pub error: Option<String>,
+    pub status: TextEgressStatus,
+    pub paths: Vec<String>,
+    pub s3_bucket_name: Option<String>,
+}
 
 pub struct SessionListenerActor {
     pub rabbitmq_host: String,
@@ -20,6 +48,9 @@ pub struct SessionListenerActor {
     project_client: Arc<Mutex<ProjectClient>>,
     registered_egress_group: Arc<Mutex<Option<DeviceResponse>>>,
     rabbitmq_listener: Arc<Mutex<Option<Addr<RabbitMQListenerActor>>>>,
+    s3_uploader: Arc<Mutex<Option<Addr<S3UploaderActor>>>>,
+    s3_config: S3Config,
+    session_egresses: Arc<Mutex<HashMap<String, TextEgressInfo>>>,
 }
 
 impl SessionListenerActor {
@@ -31,6 +62,7 @@ impl SessionListenerActor {
         base_url: &str,
         api_key: &str,
         api_secret: &str,
+        s3_config: &S3Config,
     ) -> Self {
         SessionListenerActor {
             rabbitmq_host: rabbitmq_host.to_string(),
@@ -41,6 +73,9 @@ impl SessionListenerActor {
             ))),
             registered_egress_group: Arc::new(Mutex::new(None)),
             rabbitmq_listener: Arc::new(Mutex::new(None)),
+            s3_uploader: Arc::new(Mutex::new(None)),
+            s3_config: s3_config.clone(),
+            session_egresses: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -120,6 +155,8 @@ impl Handler<ProjectMessages> for SessionListenerActor {
                 let use_ssl = self.use_ssl;
                 let device_details_arc = self.registered_egress_group.clone();
                 let actor_addr_arc = self.rabbitmq_listener.clone();
+                let s3_uploader_arc = self.s3_uploader.clone();
+                let s3_config = self.s3_config.clone();
 
                 let fut = async move {
                     let client = client.lock().unwrap();
@@ -144,7 +181,7 @@ impl Handler<ProjectMessages> for SessionListenerActor {
                     let rmq_listener_actor = RabbitMQListenerActor::new(
                         project.id.clone(),
                         egress_actor_response.id.clone(),
-                        addr,
+                        addr.clone(),
                     );
 
                     let rmq_listener_addr = rmq_listener_actor.start();
@@ -187,6 +224,19 @@ impl Handler<ProjectMessages> for SessionListenerActor {
 
                     *device_details = Some(response);
 
+                    let s3_uploader_actor = S3UploaderActor::new(
+                        &s3_config.bucket_name,
+                        &s3_config.access_key,
+                        &s3_config.secret_key,
+                        &s3_config.region,
+                        &s3_config.endpoint,
+                        addr.clone(),
+                    );
+
+                    let s3_uploader_addr = s3_uploader_actor.start();
+
+                    *s3_uploader_arc.lock().unwrap() = Some(s3_uploader_addr);
+
                     Ok(egress_actor_response)
                 };
 
@@ -195,7 +245,7 @@ impl Handler<ProjectMessages> for SessionListenerActor {
             ProjectMessages::Deregister => {
                 let project_client = self.project_client.clone();
                 let device_details_arc = self.registered_egress_group.clone();
-                let actor_addr_arc = self.rabbitmq_listener.clone();
+                let rmq_actor_addr_arc = self.rabbitmq_listener.clone();
 
                 let fut = async move {
                     let device_details = device_details_arc.lock().unwrap();
@@ -211,9 +261,9 @@ impl Handler<ProjectMessages> for SessionListenerActor {
                         deregistered_device
                     );
 
-                    let addr = actor_addr_arc.lock().unwrap();
-                    if addr.is_some() {
-                        addr.as_ref().unwrap().do_send(
+                    let rmq_addr = rmq_actor_addr_arc.lock().unwrap();
+                    if rmq_addr.is_some() {
+                        rmq_addr.as_ref().unwrap().do_send(
                             RabbitMQListenerActorMessages::StopListening {
                                 project_id: project.id.clone(),
                             },
@@ -233,6 +283,10 @@ impl Handler<RoomListenerUpdates> for SessionListenerActor {
     type Result = ResponseActFuture<Self, ()>;
 
     fn handle(&mut self, msg: RoomListenerUpdates, ctx: &mut Self::Context) -> Self::Result {
+        let session_egresses = self.session_egresses.clone();
+        let s3_uploader_arc = self.s3_uploader.clone();
+        let project_client_arc = self.project_client.clone();
+
         let fut = async move {
             match msg {
                 RoomListenerUpdates::Started {
@@ -240,20 +294,110 @@ impl Handler<RoomListenerUpdates> for SessionListenerActor {
                     room_name,
                     topic,
                     files,
-                } => {}
+                } => {
+                    let mut session_egresses = session_egresses.lock().unwrap();
+
+                    session_egresses.insert(
+                        egress_id.clone(),
+                        TextEgressInfo {
+                            egress_id: egress_id,
+                            room_name: room_name,
+                            topic: topic,
+                            started_at: Some(chrono::Utc::now().timestamp() as usize),
+                            stopped_at: None,
+                            files: files,
+                            error: None,
+                            status: TextEgressStatus::Started,
+                            paths: vec![],
+                            s3_bucket_name: None,
+                        },
+                    );
+                }
                 RoomListenerUpdates::Updated {
                     egress_id,
                     room_name,
                     topic,
                     files,
-                } => {}
-                RoomListenerUpdates::Failed { egress_id, error } => {}
+                } => {
+                    let mut session_egresses = session_egresses.lock().unwrap();
+                    let existing = session_egresses.get_mut(&egress_id);
+
+                    if let Some(active_egress) = existing {
+                        active_egress.files = files;
+                        active_egress.topic = topic;
+                        active_egress.room_name = room_name;
+                    }
+                }
+                RoomListenerUpdates::Failed { egress_id, error } => {
+                    let mut session_egresses = session_egresses.lock().unwrap();
+                    let existing = session_egresses.get_mut(&egress_id);
+
+                    if let Some(active_egress) = existing {
+                        active_egress.error = Some(error.to_string());
+                        active_egress.status = TextEgressStatus::Failed;
+                    }
+                }
                 RoomListenerUpdates::Stopped {
                     egress_id,
                     room_name,
                     topic,
                     files,
-                } => {}
+                } => {
+                    let mut session_egresses = session_egresses.lock().unwrap();
+                    let existing = session_egresses.get_mut(&egress_id);
+
+                    if let Some(active_egress) = existing {
+                        active_egress.files = files;
+                        active_egress.topic = topic;
+                        active_egress.room_name = room_name.clone();
+                        active_egress.stopped_at = Some(chrono::Utc::now().timestamp() as usize);
+                        active_egress.status = TextEgressStatus::Complete;
+
+                        let s3_uploader_addr = s3_uploader_arc.lock().unwrap();
+                        let project_details = project_client_arc
+                            .lock()
+                            .unwrap()
+                            .get_project_details()
+                            .await
+                            .unwrap();
+
+                        if s3_uploader_addr.is_some() {
+                            let uploader_addr = s3_uploader_addr.as_ref().unwrap();
+                            let files = active_egress
+                                .files
+                                .iter()
+                                .map(|f| f.file_path.clone())
+                                .collect();
+
+                            let prefix = format!(
+                                "{}-{}/{}/{}/{}/{}",
+                                project_details.name,
+                                project_details.id,
+                                room_name,
+                                "text-egress",
+                                active_egress
+                                    .topic
+                                    .clone()
+                                    .unwrap_or_else(|| "all-topics".to_string()),
+                                &egress_id
+                            );
+
+                            let _ = uploader_addr
+                                .send(S3UploaderMessages::Start {
+                                    prefix: prefix,
+                                    egress_id: egress_id,
+                                    files: files,
+                                })
+                                .await;
+
+                            ()
+                        } else {
+                            ()
+                        }
+                    } else {
+                        ()
+                    }
+                }
             }
         };
 
