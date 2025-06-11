@@ -147,7 +147,7 @@ impl Actor for SessionListenerActor {
     fn started(&mut self, _ctx: &mut Self::Context) {
         log::info!("SessionListenerActor started");
         // Since the token expires in 3600
-        _ctx.run_interval(Duration::from_secs(3500), move |_actor, ctx| {
+        _ctx.run_interval(Duration::from_secs(5), move |_actor, ctx| {
             ctx.address().do_send(ConnectionMessages::RefreshConnection);
         });
     }
@@ -178,7 +178,7 @@ impl Handler<ProjectMessages> for SessionListenerActor {
                         comments: Some("Text Egress Actor".to_string()),
                     };
 
-                    let api_token = client.generate_api_token().unwrap();
+                    let api_token = client.generate_api_token()?;
 
                     let egress_actor_response =
                         client.register_device(&registration_request).await?;
@@ -548,7 +548,7 @@ impl Handler<ConnectionMessages> for SessionListenerActor {
                         addr.do_send(RabbitMQListenerActorMessages::StartListening {
                             project_id: project_details.id.clone(),
                             group_name: "text-egress".into(),
-                            api_token: client.get_api_token().await?,
+                            api_token: client.generate_api_token()?,
                             rabbitmq_host: rmq_host,
                             rabbitmq_port: rmq_port,
                             rabbitmq_vhost_name: "syncflow".into(),
