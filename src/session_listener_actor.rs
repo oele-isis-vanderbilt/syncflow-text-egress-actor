@@ -147,7 +147,7 @@ impl Actor for SessionListenerActor {
     fn started(&mut self, _ctx: &mut Self::Context) {
         log::info!("SessionListenerActor started");
         // Since the token expires in 3600
-        _ctx.run_interval(Duration::from_secs(5), move |_actor, ctx| {
+        _ctx.run_interval(Duration::from_secs(3500), move |_actor, ctx| {
             ctx.address().do_send(ConnectionMessages::RefreshConnection);
         });
     }
