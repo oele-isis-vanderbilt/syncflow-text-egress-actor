@@ -10,6 +10,7 @@ use amqprs::connection::{Connection, OpenConnectionArguments};
 use amqprs::tls::TlsAdaptor;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use syncflow_client::ProjectClient;
 use syncflow_shared::device_models::{DeviceRegisterRequest, DeviceResponse, NewSessionMessage};
 use syncflow_shared::livekit_models::{TokenRequest, VideoGrantsWrapper};
@@ -134,11 +135,21 @@ pub enum ProjectMessages {
     Deregister,
 }
 
+#[derive(Debug, Clone, Message)]
+#[rtype(result = "Result<(), TextEgressError>")]
+pub enum ConnectionMessages {
+    RefreshConnection,
+}
+
 impl Actor for SessionListenerActor {
     type Context = actix::Context<Self>;
 
     fn started(&mut self, _ctx: &mut Self::Context) {
         log::info!("SessionListenerActor started");
+        // Since the token expires in 3600
+        _ctx.run_interval(Duration::from_secs(3500), move |_actor, ctx| {
+            ctx.address().do_send(ConnectionMessages::RefreshConnection);
+        });
     }
 }
 
@@ -167,7 +178,7 @@ impl Handler<ProjectMessages> for SessionListenerActor {
                         comments: Some("Text Egress Actor".to_string()),
                     };
 
-                    let api_token = client.get_api_token().await.unwrap();
+                    let api_token = client.generate_api_token().unwrap();
 
                     let egress_actor_response =
                         client.register_device(&registration_request).await?;
@@ -497,6 +508,63 @@ impl Handler<SessionCreatedMessage> for SessionListenerActor {
     }
 }
 
+impl Handler<ConnectionMessages> for SessionListenerActor {
+    type Result = ResponseActFuture<Self, Result<(), TextEgressError>>;
+
+    fn handle(&mut self, msg: ConnectionMessages, _ctx: &mut Self::Context) -> Self::Result {
+        match msg {
+            ConnectionMessages::RefreshConnection => {
+                let client = self.project_client.clone();
+                let rmq_listener_addr_arc = self.rabbitmq_listener.clone();
+                let rmq_host = self.rabbitmq_host.clone();
+                let rmq_port = self.port;
+                let rmq_use_ssl = self.use_ssl;
+                let registered_egress_group = self.registered_egress_group.clone();
+
+                let fut = async move {
+                    log::info!("Refreshing connection for SessionListenerActor");
+
+                    let client = client.lock().await;
+                    let rmq_listener = rmq_listener_addr_arc.lock().await;
+                    let device_details = registered_egress_group.lock().await;
+
+                    if let (Some(addr), Some(device)) =
+                        (rmq_listener.as_ref(), device_details.as_ref())
+                    {
+                        let project_details = client.get_project_details().await?;
+                        addr.do_send(RabbitMQListenerActorMessages::StopListening {
+                            project_id: project_details.id.clone(),
+                        });
+                        log::info!("Stopped RabbitMQ listener actor");
+                        let exchange_name = device
+                            .session_notification_exchange_name
+                            .clone()
+                            .unwrap_or_default();
+                        let binding_key = device
+                            .session_notification_binding_key
+                            .clone()
+                            .unwrap_or_default();
+
+                        addr.do_send(RabbitMQListenerActorMessages::StartListening {
+                            project_id: project_details.id.clone(),
+                            group_name: "text-egress".into(),
+                            api_token: client.get_api_token().await?,
+                            rabbitmq_host: rmq_host,
+                            rabbitmq_port: rmq_port,
+                            rabbitmq_vhost_name: "syncflow".into(),
+                            use_ssl: rmq_use_ssl,
+                            exchange_name,
+                            binding_key,
+                        });
+                    }
+                    Ok(())
+                };
+                Box::pin(fut.into_actor(self))
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Message)]
 #[rtype(result = "Result<(), TextEgressError>")]
 pub struct SessionCreatedMessage {
@@ -640,6 +708,13 @@ impl Handler<RabbitMQListenerActorMessages> for RabbitMQListenerActor {
                         .await
                         .basic_consume_rx(consume_args)
                         .await;
+
+                    log::info!(
+                        "Listening for the project with id: {:#?} with queue: {:#?}",
+                        project_id,
+                        queue_name
+                    );
+
                     let (_, mut rx) = result?;
 
                     while let Some(msg) = rx.recv().await {

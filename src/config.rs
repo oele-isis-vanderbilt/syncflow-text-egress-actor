@@ -43,12 +43,14 @@ pub struct S3Config {
 }
 
 impl TextEgressConfig {
+    #[allow(clippy::result_large_err)]
     pub fn load() -> Result<Self, TextEgressError> {
         load_env();
         let config = envious::Config::default().build_from_env::<TextEgressConfig>()?;
         Ok(config)
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn from_filename(file_path: &str) -> Result<Self, TextEgressError> {
         let _ = dotenvy::from_filename(file_path)?;
         let config = envious::Config::default().build_from_env::<TextEgressConfig>()?;
